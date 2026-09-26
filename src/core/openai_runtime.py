@@ -8,6 +8,7 @@ Gemini Red Team dùng Google ADK trong agents/*.py — không đi qua file này.
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -42,6 +43,8 @@ class OpenAIRunner:
     plugins: list = field(default_factory=list)
     provider: str = "openai"
     temperature: float = 0.4
+    user_id: str = "student"
+    served_model: str | None = None
     client_kwargs: dict = field(default_factory=dict)
     input_hooks: list[Callable[[str], str | None]] = field(default_factory=list)
     output_hooks: list[Callable[[str], str]] = field(default_factory=list)
@@ -49,7 +52,23 @@ class OpenAIRunner:
     def _client(self):
         from openai import OpenAI
 
-        return OpenAI(**(self.client_kwargs or {}))
+        return OpenAI(timeout=60, max_retries=1, **(self.client_kwargs or {}))
+
+    async def _complete(self, client, model: str, messages: list):
+        """Bound transient shared-pool retries; preserve all other API errors."""
+        from openai import RateLimitError
+        for attempt in range(5):
+            try:
+                return client.chat.completions.create(
+                    model=model, messages=messages, temperature=self.temperature,
+                    max_tokens=1024,
+                )
+            except RateLimitError:
+                if self.provider != "openrouter" or attempt == 4:
+                    raise
+                delay = min(2 ** (attempt + 1), 16)
+                print(f"OpenRouter rate limit; retrying in {delay}s ({attempt + 1}/4)", flush=True)
+                await asyncio.sleep(delay)
 
     async def chat(self, agent: OpenAIAgent, user_message: str) -> str:
         for hook in self.input_hooks:
@@ -62,14 +81,29 @@ class OpenAIRunner:
             return block_msg
 
         client = self._client()
-        completion = client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": agent.instruction},
-                {"role": "user", "content": user_message},
-            ],
-            temperature=self.temperature,
-        )
+        request_model = self.served_model or self.model
+        messages = [
+            {"role": "system", "content": agent.instruction},
+            {"role": "user", "content": user_message},
+        ]
+        try:
+            completion = await self._complete(client, request_model, messages)
+        except Exception as exc:
+            from openai import NotFoundError
+            # OpenRouter currently publishes this exact model only under :free.
+            # Never switch model family, provider, or silently claim the old ID.
+            same_model_route = (
+                isinstance(exc, NotFoundError)
+                and self.provider == "openrouter"
+                and request_model == "liquid/lfm-2.5-2.6b"
+                and "No endpoints found" in str(exc)
+            )
+            if not same_model_route:
+                raise
+            request_model = "liquid/lfm-2.5-2.6b:free"
+            print(f"OpenRouter route unavailable; using same model route {request_model}", flush=True)
+            completion = await self._complete(client, request_model, messages)
+        self.served_model = request_model
         text = (completion.choices[0].message.content or "").strip()
 
         for hook in self.output_hooks:
@@ -90,7 +124,7 @@ class OpenAIRunner:
             role="user",
             parts=[types.Part.from_text(text=user_message)],
         )
-        ctx = _MockInvocationContext()
+        ctx = _MockInvocationContext(user_id=self.user_id)
         for plugin in self.plugins:
             cb = getattr(plugin, "on_user_message_callback", None)
             if cb is None:
@@ -137,7 +171,7 @@ class OpenAIRunner:
                 out = cb(callback_context=_Ctx(), llm_response=llm_response)
             if out is not None and getattr(out, "content", None) is not None:
                 llm_response = out
-        return _content_to_text(llm_response.content) or text
+        return _content_to_text(llm_response.content)
 
 
 def _content_to_text(content: Any) -> str:

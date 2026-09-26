@@ -1,5 +1,39 @@
 # Day 11 — Controlled Agent Security (2026)
 
+## Bài nộp — Bùi Đức Thông · MSSV 2A202602931
+
+Đã triển khai các phần bắt buộc CP2–CP4. Audit và monitoring là observer của pipeline; egress là hàm kiểm tra độc lập trước khi gửi dữ liệu tới một endpoint. Các agent Red/Red Advance và dữ liệu secret giả của starter được giữ nguyên.
+
+- Input: chuẩn hóa Unicode, bỏ ký tự ẩn, xử lý tiếng Việt có dấu; phát hiện instruction override bằng regex; chỉ cho phép chủ đề ngân hàng.
+- Output: che SĐT, email, CMND/CCCD, password, API key và host nội bộ; chặn cả secret bị tách bằng khoảng trắng hoặc qua nhiều phần của response.
+- Rate limiter: sliding window theo từng user, mặc định 10 request/60 giây. Audit ghép input/output bằng request ID, che dữ liệu nhạy cảm trong log; monitoring cảnh báo khi vượt ngưỡng.
+- Egress: chỉ HTTPS tới đúng `api.vinbank.example` hoặc `cases.vinbank.example`, không userinfo/port lạ, không PII hay secret trong payload. Bộ test chỉ kiểm tra quyết định, không chuyển tiền hoặc gửi dữ liệu tới ngân hàng.
+- Red-team: 5 prompt có mục tiêu rõ ràng — điền inventory, dịch/JSON, kể chuyện, xác nhận và leo thang theo bước. Chọn bonus **B1** dựa trên leak của Red; coach/grader replay quyết định điểm.
+
+### Chạy và tự kiểm
+
+```bash
+source .venv/bin/activate
+python src/main.py --part 2
+python src/main.py --part 3
+python src/main.py --part 4
+python -m pytest tests/smoke tests/public tests/unit -q
+python scripts/grade.py --submission-dir . --out outputs/grade_report.json
+```
+
+Điền key trong `.env` từ mẫu `.env.example`; `.env` không được commit. Code và kiểm thử có sự hỗ trợ của Codex. Cần đọc, hiểu và giải thích được implementation cùng mục đích của từng prompt trước khi nộp.
+
+### Model và phạm vi bằng chứng
+
+Blue vẫn yêu cầu `liquid/lfm-2.5-2.6b`. Khi chạy, OpenRouter trả **404 — No endpoints found** cho ID trong đề. Runtime có retry giới hạn cho lỗi 429 của OpenRouter và chỉ thử route `liquid/lfm-2.5-2.6b:free` của **cùng model** sau lỗi này; không chuyển model khác. Route hiện được công bố tại [OpenRouter](https://openrouter.ai/liquid/lfm-2.5-2.6b%3Afree). `results.json` ghi cả `requested_model` và `llm_model` thực tế. **Coach cần xác nhận route này được chấp nhận khi chấm.**
+
+Câu an toàn, tấn công và trường hợp biên chạy qua Blue thật. Phép thử rate limit dùng một burst kiểm tra riêng tại lớp rate limiter để độ trễ API không làm kéo dài cửa sổ 60 giây; JSON ghi `tested_layer` và `llm_called: false`. Các phép thử output/egress là kiểm tra rule code trực tiếp. Đây là bằng chứng về guardrails; không đánh giá độ chính xác của mọi câu trả lời LLM hoặc triển khai HITL production.
+
+Báo cáo được **tự sinh** tại [`outputs/lab_report.md`](outputs/lab_report.md); kết quả bắt buộc ở [`outputs/results.json`](outputs/results.json) và [`outputs/attack_results.json`](outputs/attack_results.json).
+
+---
+
+
 > 👤 **Hình thức:** bài tập **cá nhân** (1 người / 1 MSSV).  
 > 🎯 **Mục tiêu:** xây **Blue** (phòng thủ), rồi red-team **Red** + **Red Advance**.  
 > ✅ Làm theo **Checkpoint 1 → 5** trong [`CHECKPOINTS.md`](CHECKPOINTS.md) · nộp theo [`SUBMISSION.md`](SUBMISSION.md).
